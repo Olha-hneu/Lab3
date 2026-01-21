@@ -1,0 +1,141 @@
+from PIL import Image
+from pathlib import Path
+
+END_MARKER = b"<<END>>"
+
+def bytes_to_bits(data: bytes) -> list:
+    bits = []
+    for byte in data:
+        for i in range(7, -1, -1):
+            bits.append((byte >> i) & 1)
+    return bits
+
+def bits_to_bytes(bits: list) -> bytes:
+    out = bytearray()
+    for i in range(0, len(bits), 8):
+        chunk = bits[i:i+8]
+        if len(chunk) < 8:
+            break
+        byte = 0
+        for b in chunk:
+            byte = (byte << 1) | b
+        out.append(byte)
+    return bytes(out)
+
+def hide_message(input_image_path: str, output_image_path: str, message: str) -> dict:
+    img = Image.open(input_image_path).convert("RGB")
+    pixels = list(img.getdata())
+
+    payload = message.encode("utf-8") + END_MARKER
+    bits = bytes_to_bits(payload)
+
+    capacity_bits = len(pixels)  # 1 біт на піксель (B-канал)
+    if len(bits) > capacity_bits:
+        raise ValueError("MSG_TOO_LONG")
+
+    new_pixels = []
+    changed_pixels = 0
+
+    for idx, (r, g, b) in enumerate(pixels):
+        if idx < len(bits):
+            bit = bits[idx]
+            new_b = (b & 254) | bit  # 254 = 11111110
+            if new_b != b:
+                changed_pixels += 1
+            new_pixels.append((r, g, new_b))
+        else:
+            new_pixels.append((r, g, b))
+
+    out_img = Image.new("RGB", img.size)
+    out_img.putdata(new_pixels)
+    out_img.save(output_image_path, "PNG")
+
+    original_size = Path(input_image_path).stat().st_size
+    stego_size = Path(output_image_path).stat().st_size
+
+    return {
+        "input_image": input_image_path,
+        "output_image": output_image_path,
+        "width": img.size[0],
+        "height": img.size[1],
+        "pixels_total": len(pixels),
+        "bits_written": len(bits),
+        "capacity_bits": capacity_bits,
+        "changed_pixels": changed_pixels,
+        "changed_percent": (changed_pixels / len(pixels)) * 100,
+        "original_size_bytes": original_size,
+        "stego_size_bytes": stego_size,
+    }
+
+def extract_message(stego_image_path: str) -> str:
+    img = Image.open(stego_image_path).convert("RGB")
+    pixels = list(img.getdata())
+
+    bits = []
+    extracted = bytearray()
+
+    for (_, _, b) in pixels:
+        bits.append(b & 1)
+        if len(bits) == 8:
+            extracted.append(bits_to_bytes(bits)[0])
+            bits = []
+            if extracted.endswith(END_MARKER):
+                msg_bytes = extracted[:-len(END_MARKER)]
+                return msg_bytes.decode("utf-8", errors="strict")
+
+    raise ValueError("NO_END_MARKER")
+
+def compare_images(original_path: str, stego_path: str) -> dict:
+    orig = Image.open(original_path).convert("RGB")
+    stego = Image.open(stego_path).convert("RGB")
+
+    if orig.size != stego.size:
+        raise ValueError("DIFF_SIZE")
+
+    p1 = list(orig.getdata())
+    p2 = list(stego.getdata())
+
+    diff_pixels = 0
+    diff_r = 0
+    diff_g = 0
+    diff_b = 0
+
+    for (r1, g1, b1), (r2, g2, b2) in zip(p1, p2):
+        if (r1, g1, b1) != (r2, g2, b2):
+            diff_pixels += 1
+        if r1 != r2:
+            diff_r += 1
+        if g1 != g2:
+            diff_g += 1
+        if b1 != b2:
+            diff_b += 1
+
+    total = len(p1)
+    return {
+        "total_pixels": total,
+        "diff_pixels": diff_pixels,
+        "diff_percent": (diff_pixels / total) * 100,
+        "diff_r_pixels": diff_r,
+        "diff_g_pixels": diff_g,
+        "diff_b_pixels": diff_b,
+    }
+
+if __name__ == "__main__":
+    message = "Ольга 23.12.2004"
+    input_img = "котик.png"
+    stego_img = "котик_stego.png"
+
+    info = hide_message(input_img, stego_img, message)
+    print("HIDE_RESULT")
+    for k, v in info.items():
+        print(k, "=", v)
+
+    extracted = extract_message(stego_img)
+    print("EXTRACTED_MESSAGE")
+    print(extracted)
+
+    diff = compare_images(input_img, stego_img)
+    print("DIFF_ANALYSIS")
+    for k, v in diff.items():
+        print(k, "=", v)
+PYPY
